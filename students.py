@@ -5,6 +5,7 @@ import json
 import os
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, asdict
+from db import get_conn
 
 STUDENTS_FILE = "students.json"
 
@@ -55,28 +56,53 @@ class StudentsManager:
         self._load_students()
     
     def _load_students(self):
-        """Charge les étudiants depuis le fichier JSON."""
-        if not os.path.exists(STUDENTS_FILE):
-            self._create_sample_students()
-            return
-        
         try:
-            with open(STUDENTS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for student_id, student_data in data.items():
-                    self._students[student_id] = Student.from_dict(student_data)
-        except (json.JSONDecodeError, IOError, KeyError) as e:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id, nom, email, telephone, langue, faculte, promotion, canal_prefere, actif FROM students")
+            rows = cur.fetchall()
+            if not rows:
+                self._create_sample_students()
+            else:
+                for row in rows:
+                    s = Student(
+                        id=row[0],
+                        nom=row[1],
+                        email=row[2],
+                        telephone=row[3],
+                        langue=row[4] or "fr",
+                        faculté=row[5] or "",
+                        promotion=row[6] or "",
+                        canal_prefere=row[7] or "email",
+                        actif=bool(row[8]),
+                    )
+                    self._students[s.id] = s
+            conn.close()
+        except Exception as e:
             print(f"[STUDENTS] Erreur lors du chargement: {e}")
             self._create_sample_students()
     
     def _save_students(self):
-        """Sauvegarde les étudiants dans le fichier JSON."""
-        data = {
-            student_id: student.to_dict()
-            for student_id, student in self._students.items()
-        }
-        with open(STUDENTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        conn = get_conn()
+        cur = conn.cursor()
+        for student_id, student in self._students.items():
+            cur.execute(
+                "INSERT INTO students(id, nom, email, telephone, langue, faculte, promotion, canal_prefere, actif) VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET nom=excluded.nom, email=excluded.email, telephone=excluded.telephone, langue=excluded.langue, faculte=excluded.faculte, promotion=excluded.promotion, canal_prefere=excluded.canal_prefere, actif=excluded.actif",
+                (
+                    student.id,
+                    student.nom,
+                    student.email,
+                    student.telephone,
+                    student.langue,
+                    student.faculté,
+                    student.promotion,
+                    student.canal_prefere,
+                    1 if student.actif else 0,
+                ),
+            )
+        conn.commit()
+        conn.close()
     
     def _create_sample_students(self):
         """Crée quelques étudiants d'exemple pour le démarrage."""
@@ -102,7 +128,24 @@ class StudentsManager:
     def add_student(self, student: Student):
         """Ajoute un étudiant."""
         self._students[student.id] = student
-        self._save_students()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO students(id, nom, email, telephone, langue, faculte, promotion, canal_prefere, actif) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                student.id,
+                student.nom,
+                student.email,
+                student.telephone,
+                student.langue,
+                student.faculté,
+                student.promotion,
+                student.canal_prefere,
+                1 if student.actif else 0,
+            ),
+        )
+        conn.commit()
+        conn.close()
     
     def update_student(self, student_id: str, **kwargs):
         """Met à jour un étudiant."""
@@ -113,14 +156,34 @@ class StudentsManager:
         for key, value in kwargs.items():
             if hasattr(student, key):
                 setattr(student, key, value)
-        
-        self._save_students()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE students SET nom=?, email=?, telephone=?, langue=?, faculte=?, promotion=?, canal_prefere=?, actif=? WHERE id=?",
+            (
+                student.nom,
+                student.email,
+                student.telephone,
+                student.langue,
+                student.faculté,
+                student.promotion,
+                student.canal_prefere,
+                1 if student.actif else 0,
+                student.id,
+            ),
+        )
+        conn.commit()
+        conn.close()
     
     def delete_student(self, student_id: str):
         """Supprime un étudiant."""
         if student_id in self._students:
             del self._students[student_id]
-            self._save_students()
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM students WHERE id=?", (student_id,))
+            conn.commit()
+            conn.close()
     
     def filter_students(
         self,

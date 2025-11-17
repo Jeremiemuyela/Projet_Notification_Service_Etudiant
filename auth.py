@@ -9,6 +9,7 @@ import hashlib
 from typing import Dict, List, Optional, Set
 from functools import wraps
 from flask import request, jsonify, session, redirect, url_for
+from db import get_conn
 
 # Fichier de stockage des utilisateurs
 USERS_FILE = "users.json"
@@ -22,20 +23,39 @@ ROLES = {
 
 
 def load_users() -> Dict[str, Dict]:
-    """Charge les utilisateurs depuis le fichier JSON."""
-    if not os.path.exists(USERS_FILE):
-        return {}
-    try:
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {}
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT username, password_hash, role, api_key, active FROM users")
+    users: Dict[str, Dict] = {}
+    for row in cur.fetchall():
+        users[row[0]] = {
+            "username": row[0],
+            "password_hash": row[1],
+            "role": row[2],
+            "api_key": row[3],
+            "active": bool(row[4]),
+        }
+    conn.close()
+    return users
 
 
 def save_users(users: Dict[str, Dict]):
-    """Sauvegarde les utilisateurs dans le fichier JSON."""
-    with open(USERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=2, ensure_ascii=False)
+    conn = get_conn()
+    cur = conn.cursor()
+    for _, u in users.items():
+        cur.execute(
+            "INSERT INTO users(username, password_hash, role, api_key, active) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role=excluded.role, api_key=excluded.api_key, active=excluded.active",
+            (
+                u.get("username"),
+                u.get("password_hash"),
+                u.get("role", "viewer"),
+                u.get("api_key"),
+                1 if u.get("active", True) else 0,
+            ),
+        )
+    conn.commit()
+    conn.close()
 
 
 def hash_password(password: str) -> str:
@@ -54,55 +74,68 @@ def generate_api_key() -> str:
 
 
 def create_user(username: str, password: str, role: str = "viewer", api_key: Optional[str] = None) -> Dict:
-    """Crée un nouvel utilisateur."""
     if role not in ROLES:
         raise ValueError(f"Rôle invalide: {role}. Rôles disponibles: {', '.join(ROLES.keys())}")
-    
-    users = load_users()
-    if username in users:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE username=?", (username,))
+    if cur.fetchone():
+        conn.close()
         raise ValueError(f"L'utilisateur '{username}' existe déjà")
-    
     if api_key is None:
         api_key = generate_api_key()
-    
     user = {
         "username": username,
         "password_hash": hash_password(password),
         "role": role,
         "api_key": api_key,
-        "active": True
+        "active": True,
     }
-    
-    users[username] = user
-    save_users(users)
+    cur.execute(
+        "INSERT INTO users(username, password_hash, role, api_key, active) VALUES(?,?,?,?,?)",
+        (username, user["password_hash"], role, api_key, 1),
+    )
+    conn.commit()
+    conn.close()
     return user
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict]:
-    """Authentifie un utilisateur avec nom d'utilisateur et mot de passe."""
-    users = load_users()
-    user = users.get(username)
-    
-    if not user:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT username, password_hash, role, api_key, active FROM users WHERE username=?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
         return None
-    
+    user = {
+        "username": row[0],
+        "password_hash": row[1],
+        "role": row[2],
+        "api_key": row[3],
+        "active": bool(row[4]),
+    }
     if not user.get("active", True):
         return None
-    
     if not verify_password(password, user.get("password_hash", "")):
         return None
-    
     return user
 
 
 def authenticate_api_key(api_key: str) -> Optional[Dict]:
-    """Authentifie un utilisateur avec une clé API."""
-    users = load_users()
-    
-    for username, user in users.items():
-        if user.get("api_key") == api_key and user.get("active", True):
-            return user
-    
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT username, password_hash, role, api_key, active FROM users WHERE api_key=?", (api_key,))
+    row = cur.fetchone()
+    conn.close()
+    if row and bool(row[4]):
+        return {
+            "username": row[0],
+            "password_hash": row[1],
+            "role": row[2],
+            "api_key": row[3],
+            "active": bool(row[4]),
+        }
     return None
 
 
@@ -228,19 +261,16 @@ def require_permission(permission: str):
 # ==================== INITIALISATION ====================
 
 def init_default_users():
-    """Initialise les utilisateurs par défaut si le fichier n'existe pas."""
-    if os.path.exists(USERS_FILE):
-        return
-    
-    # Créer un admin par défaut
     try:
-        create_user(
-            username="admin",
-            password="admin123",  # À changer en production !
-            role="admin"
-        )
-        print(f"[AUTH] Utilisateur admin créé (mot de passe: admin123)")
-        print(f"[AUTH] ⚠️  Changez le mot de passe en production !")
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(1) FROM users")
+        count = cur.fetchone()[0]
+        if count == 0:
+            create_user(username="admin", password="admin123", role="admin")
+            print("[AUTH] Utilisateur admin créé (mot de passe: admin123)")
+            print("[AUTH] Changez le mot de passe en production !")
+        conn.close()
     except Exception as e:
-        print(f"[AUTH] Erreur lors de la création de l'utilisateur par défaut: {e}")
+        print(f"[AUTH] Erreur lors de l'initialisation: {e}")
 

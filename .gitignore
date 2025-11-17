@@ -1,26 +1,10 @@
-# Fichiers de configuration sensibles
-users.json
-smtp_config.json
-students.json
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
+*.pyc
 venv/
-ENV/
-.venv
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
+notif/
+notification_service.db
+.env
+*.log
+*.sqlite
+*.sqlite3
 

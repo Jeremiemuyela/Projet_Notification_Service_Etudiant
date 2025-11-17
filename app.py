@@ -7,12 +7,18 @@ import projetnotif as notif
 from admin import admin_bp
 from auth import init_default_users, require_auth
 from queue_manager import queue_manager
+import db
 
 # ==================== INITIALISATION FLASK ====================
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False  # Pour supporter les caractères français
 app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'  # À changer en production !
+app.config['SQLITE_DB'] = 'notification_service.db'
+
+# Initialiser la base de données et migrer depuis JSON
+db.init_db()
+db.migrate_from_json()
 
 # Initialiser les utilisateurs par défaut
 init_default_users()
